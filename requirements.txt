@@ -1,0 +1,9 @@
+distributed
+torch
+req
+multiprocess
+pytorch-pretrained-bert
+tensorboardX
+pyrouge
+pymysql
+sqlalchemy

@@ -1,2 +1,7 @@
 # Project exclude paths
 /venv/
+.idea/$CACHE_FILE$
+.idea/$PRODUCT_WORKSPACE_FILE$
+.idea/.gitignore
+.idea/dictionaries
+.idea/misc.xml
