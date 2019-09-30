@@ -7,3 +7,4 @@ tensorboardX
 pyrouge
 pymysql
 sqlalchemy
+pytorch_transformers
