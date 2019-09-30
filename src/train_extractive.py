@@ -16,7 +16,7 @@ import torch
 import distributed
 from models_new import data_loader, model_builder
 from models_new.data_loader import load_dataset
-from src.models_new.model_builder import ExtSummarizer
+from models_new.model_builder import ExtSummarizer
 from models_new.trainer_ext import build_trainer
 from others.logging import logger, init_logger
 

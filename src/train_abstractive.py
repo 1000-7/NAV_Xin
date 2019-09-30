@@ -18,7 +18,7 @@ import distributed
 from models_new import data_loader, model_builder
 from models_new.data_loader import load_dataset
 from models_new.loss import abs_loss
-from src.models_new.model_builder import AbsSummarizer
+from models_new.model_builder import AbsSummarizer
 from models_new.predictor import build_predictor
 from models_new.trainer import build_trainer
 from others.logging import logger, init_logger

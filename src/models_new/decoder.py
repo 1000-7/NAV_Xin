@@ -6,8 +6,8 @@ import torch
 import torch.nn as nn
 import numpy as np
 
-from models.encoder import PositionalEncoding
-from src.models_new.neural import MultiHeadedAttention, PositionwiseFeedForward, DecoderState
+from models_new.encoder import PositionalEncoding
+from models_new.neural import MultiHeadedAttention, PositionwiseFeedForward, DecoderState
 
 MAX_SIZE = 5000
 

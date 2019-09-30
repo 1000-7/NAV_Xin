@@ -304,7 +304,7 @@ if __name__ == '__main__':
     parser.add_argument("-accum_count", default=1, type=int)
     parser.add_argument("-world_size", default=1, type=int)
     parser.add_argument("-report_every", default=1, type=int)
-    parser.add_argument("-train_steps", default=1000, type=int)
+    parser.add_argument("-train_steps", default=10000, type=int)
     parser.add_argument("-recall_eval", type=str2bool, nargs='?', const=True, default=False)
 
     parser.add_argument('-visible_gpus', default='-1', type=str)

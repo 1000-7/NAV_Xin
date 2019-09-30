@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from src.models_new.reporter import Statistics
+from models_new.reporter import Statistics
 
 
 def abs_loss(generator, symbols, vocab_size, device, train=True, label_smoothing=0.0):
