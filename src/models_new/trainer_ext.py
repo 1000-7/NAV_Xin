@@ -1,13 +1,11 @@
-# -- coding: UTF-8 --
 import os
+
 import numpy as np
 import torch
 from tensorboardX import SummaryWriter
 
 import distributed
-# import onmt
-from models.reporter import ReportMgr
-from models.stats import Statistics
+from models.reporter_ext import ReportMgr, Statistics
 from others.logging import logger
 from others.utils import test_rouge, rouge_results_to_str
 
@@ -17,8 +15,7 @@ def _tally_parameters(model):
     return n_params
 
 
-def build_trainer(args, device_id, model,
-                  optim):
+def build_trainer(args, device_id, model, optim):
     """
     Simplify `Trainer` creation based on user `opt`s*
     Args:
@@ -31,7 +28,6 @@ def build_trainer(args, device_id, model,
         model_saver(:obj:`onmt.models_new.ModelSaverBase`): the utility object
             used to save the model
     """
-    device = "cpu" if args.visible_gpus == '-1' else "cuda"
 
     grad_accum_count = args.accum_count
     n_gpu = args.world_size
@@ -186,10 +182,10 @@ class Trainer(object):
         with torch.no_grad():
             for batch in valid_iter:
                 src = batch.src
-                labels = batch.labels
+                labels = batch.src_sent_labels
                 segs = batch.segs
                 clss = batch.clss
-                mask = batch.mask
+                mask = batch.mask_src
                 mask_cls = batch.mask_cls
 
                 sent_scores, mask = self.model(src, segs, clss, mask, mask_cls)
@@ -236,10 +232,10 @@ class Trainer(object):
                 with torch.no_grad():
                     for batch in test_iter:
                         src = batch.src
-                        labels = batch.labels
+                        labels = batch.src_sent_labels
                         segs = batch.segs
                         clss = batch.clss
-                        mask = batch.mask
+                        mask = batch.mask_src
                         mask_cls = batch.mask_cls
 
                         gold = []
@@ -307,10 +303,10 @@ class Trainer(object):
                 self.model.zero_grad()
 
             src = batch.src
-            labels = batch.labels
+            labels = batch.src_sent_labels
             segs = batch.segs
             clss = batch.clss
-            mask = batch.mask
+            mask = batch.mask_src
             mask_cls = batch.mask_cls
 
             sent_scores, mask = self.model(src, segs, clss, mask, mask_cls)

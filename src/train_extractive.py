@@ -12,28 +12,18 @@ import signal
 import time
 
 import torch
-from pytorch_pretrained_bert import BertConfig
 
 import distributed
-from models import data_loader, model_builder
-from models.data_loader import load_dataset
-from models.model_builder import Summarizer
-from models.trainer import build_trainer
+from models_new import data_loader, model_builder
+from models_new.data_loader import load_dataset
+from src.models_new.model_builder import ExtSummarizer
+from models_new.trainer_ext import build_trainer
 from others.logging import logger, init_logger
 
 model_flags = ['hidden_size', 'ff_size', 'heads', 'inter_layers', 'encoder', 'ff_actv', 'use_interval', 'rnn_size']
 
 
-def str2bool(v):
-    if v.lower() in ('yes', 'true', 't', 'y', '1'):
-        return True
-    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
-        return False
-    else:
-        raise argparse.ArgumentTypeError('Boolean value expected.')
-
-
-def multi_main(args):
+def train_multi_ext(args):
     """ Spawns 1 process per GPU """
     init_logger()
 
@@ -68,7 +58,7 @@ def run(args, device_id, error_queue):
             raise AssertionError("An error occurred in \
                   Distributed initialization")
 
-        train(args, device_id)
+        train_single_ext(args, device_id)
     except KeyboardInterrupt:
         pass  # killed by parent, do nothing
     except Exception:
@@ -113,7 +103,7 @@ class ErrorHandler(object):
         raise Exception(msg)
 
 
-def wait_and_validate(args, device_id):
+def validate_ext(args, device_id):
     timestep = 0
     if (args.test_all):
         cp_files = sorted(glob.glob(os.path.join(args.model_path, 'model_step_*.pt')))
@@ -130,7 +120,7 @@ def wait_and_validate(args, device_id):
         logger.info('PPL %s' % str(xent_lst))
         for xent, cp in xent_lst:
             step = int(cp.split('.')[-2].split('_')[-1])
-            test(args, device_id, cp, step)
+            test_ext(args, device_id, cp, step)
     else:
         while (True):
             cp_files = sorted(glob.glob(os.path.join(args.model_path, 'model_step_*.pt')))
@@ -145,7 +135,7 @@ def wait_and_validate(args, device_id):
                     timestep = time_of_cp
                     step = int(cp.split('.')[-2].split('_')[-1])
                     validate(args, device_id, cp, step)
-                    test(args, device_id, cp, step)
+                    test_ext(args, device_id, cp, step)
 
             cp_files = sorted(glob.glob(os.path.join(args.model_path, 'model_step_*.pt')))
             cp_files.sort(key=os.path.getmtime)
@@ -172,9 +162,7 @@ def validate(args, device_id, pt, step):
             setattr(args, k, opt[k])
     print(args)
 
-    config = BertConfig.from_json_file(args.bert_config_path)
-    model = Summarizer(args, device, load_pretrained_bert=False, bert_config=config)
-    model.load_cp(checkpoint)
+    model = ExtSummarizer(args, device, checkpoint)
     model.eval()
 
     valid_iter = data_loader.Dataloader(args, load_dataset(args, 'valid', shuffle=False),
@@ -185,7 +173,7 @@ def validate(args, device_id, pt, step):
     return stats.xent()
 
 
-def test(args, device_id, pt, step):
+def test_ext(args, device_id, pt, step):
     device = "cpu" if args.visible_gpus == '-1' else "cuda"
     if (pt != ''):
         test_from = pt
@@ -199,32 +187,24 @@ def test(args, device_id, pt, step):
             setattr(args, k, opt[k])
     print(args)
 
-    config = BertConfig.from_json_file(args.bert_config_path)
-    model = Summarizer(args, device, load_pretrained_bert=False, bert_config=config)
-    model.load_cp(checkpoint)
+    model = ExtSummarizer(args, device, checkpoint)
     model.eval()
 
     test_iter = data_loader.Dataloader(args, load_dataset(args, 'test', shuffle=False),
-                                       args.batch_size, device,
+                                       args.test_batch_size, device,
                                        shuffle=False, is_test=True)
     trainer = build_trainer(args, device_id, model, None)
     trainer.test(test_iter, step)
 
 
-def baseline(args, cal_lead=False, cal_oracle=False):
-    test_iter = data_loader.Dataloader(args, load_dataset(args, 'test', shuffle=False),
-                                       args.batch_size, device,
-                                       shuffle=False, is_test=True)
-
-    trainer = build_trainer(args, device_id, None, None)
-    #
-    if (cal_lead):
-        trainer.test(test_iter, 0, cal_lead=True)
-    elif (cal_oracle):
-        trainer.test(test_iter, 0, cal_oracle=True)
+def train_ext(args, device_id):
+    if (args.world_size > 1):
+        train_multi_ext(args)
+    else:
+        train_single_ext(args, device_id)
 
 
-def train(args, device_id):
+def train_single_ext(args, device_id):
     init_logger(args.log_file)
 
     device = "cpu" if args.visible_gpus == '-1' else "cuda"
@@ -241,14 +221,6 @@ def train(args, device_id):
     torch.manual_seed(args.seed)
     random.seed(args.seed)
     torch.backends.cudnn.deterministic = True
-    logger.info('data begin load %s', time.strftime('%H:%M:%S', time.localtime(time.time())))
-
-    def train_iter_fct():
-        return data_loader.Dataloader(args, load_dataset(args, 'train', shuffle=True), args.batch_size, device,
-                                      shuffle=True, is_test=False)
-
-    logger.info('data end load %s', time.strftime('%H:%M:%S', time.localtime(time.time())))
-    model = Summarizer(args, device, load_pretrained_bert=True)
 
     if args.train_from != '':
         logger.info('Loading checkpoint from %s' % args.train_from)
@@ -258,89 +230,17 @@ def train(args, device_id):
         for k in opt.keys():
             if (k in model_flags):
                 setattr(args, k, opt[k])
-        model.load_cp(checkpoint)
-        optim = model_builder.build_optim(args, model, checkpoint)
     else:
-        optim = model_builder.build_optim(args, model, None)
+        checkpoint = None
+
+    def train_iter_fct():
+        return data_loader.Dataloader(args, load_dataset(args, 'train', shuffle=True), args.batch_size, device,
+                                      shuffle=True, is_test=False)
+
+    model = ExtSummarizer(args, device, checkpoint)
+    optim = model_builder.build_optim(args, model, checkpoint)
 
     logger.info(model)
+
     trainer = build_trainer(args, device_id, model, optim)
     trainer.train(train_iter_fct, args.train_steps)
-
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument("-encoder", default='classifier', type=str,
-                        choices=['classifier', 'transformer', 'rnn', 'baseline'])
-    parser.add_argument("-mode", default='train', type=str, choices=['train', 'validate', 'test'])
-    parser.add_argument("-bert_data_path", default='../bert_data/cnndm')
-    parser.add_argument("-model_path", default='../models_new/')
-    parser.add_argument("-result_path", default='../results/cnndm')
-    parser.add_argument("-temp_dir", default='../temp')
-    parser.add_argument("-bert_config_path", default='../bert_config_uncased_base.json')
-
-    parser.add_argument("-batch_size", default=1000, type=int)
-
-    parser.add_argument("-use_interval", type=str2bool, nargs='?', const=True, default=True)
-    parser.add_argument("-hidden_size", default=128, type=int)
-    parser.add_argument("-ff_size", default=512, type=int)
-    parser.add_argument("-heads", default=4, type=int)
-    parser.add_argument("-inter_layers", default=2, type=int)
-    parser.add_argument("-rnn_size", default=512, type=int)
-
-    parser.add_argument("-param_init", default=0, type=float)
-    parser.add_argument("-param_init_glorot", type=str2bool, nargs='?', const=True, default=True)
-    parser.add_argument("-dropout", default=0.1, type=float)
-    parser.add_argument("-optim", default='adam', type=str)
-    parser.add_argument("-lr", default=1, type=float)
-    parser.add_argument("-beta1", default=0.9, type=float)
-    parser.add_argument("-beta2", default=0.999, type=float)
-    parser.add_argument("-decay_method", default='', type=str)
-    parser.add_argument("-warmup_steps", default=8000, type=int)
-    parser.add_argument("-max_grad_norm", default=0, type=float)
-
-    parser.add_argument("-save_checkpoint_steps", default=5, type=int)
-    parser.add_argument("-accum_count", default=1, type=int)
-    parser.add_argument("-world_size", default=1, type=int)
-    parser.add_argument("-report_every", default=1, type=int)
-    parser.add_argument("-train_steps", default=1000, type=int)
-    parser.add_argument("-recall_eval", type=str2bool, nargs='?', const=True, default=False)
-
-    parser.add_argument('-visible_gpus', default='-1', type=str)
-    parser.add_argument('-gpu_ranks', default='0', type=str)
-    parser.add_argument('-log_file', default='../logs/cnndm.log')
-    parser.add_argument('-dataset', default='')
-    parser.add_argument('-seed', default=666, type=int)
-
-    parser.add_argument("-test_all", type=str2bool, nargs='?', const=True, default=False)
-    parser.add_argument("-test_from", default='')
-    parser.add_argument("-train_from", default='')
-    parser.add_argument("-report_rouge", type=str2bool, nargs='?', const=True, default=True)
-    parser.add_argument("-block_trigram", type=str2bool, nargs='?', const=True, default=True)
-
-    args = parser.parse_args()
-    args.gpu_ranks = [int(i) for i in args.gpu_ranks.split(',')]
-    os.environ["CUDA_VISIBLE_DEVICES"] = args.visible_gpus
-
-    init_logger(args.log_file)
-    device = "cpu" if args.visible_gpus == '-1' else "cuda"
-    device_id = 0 if device == "cuda" else -1
-
-    if (args.world_size > 1):
-        multi_main(args)
-    elif (args.mode == 'train'):
-        train(args, device_id)
-    elif (args.mode == 'validate'):
-        wait_and_validate(args, device_id)
-    elif (args.mode == 'lead'):
-        baseline(args, cal_lead=True)
-    elif (args.mode == 'oracle'):
-        baseline(args, cal_oracle=True)
-    elif (args.mode == 'test'):
-        cp = args.test_from
-        try:
-            step = int(cp.split('.')[-2].split('_')[-1])
-        except:
-            step = 0
-        test(args, device_id, cp, step)

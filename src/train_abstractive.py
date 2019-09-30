@@ -12,16 +12,19 @@ import signal
 import time
 
 import torch
-from pytorch_pretrained_bert import BertConfig
+from pytorch_transformers import BertTokenizer
 
 import distributed
-from models import data_loader, model_builder
-from models.data_loader import load_dataset
-from models.model_builder import Summarizer
-from models.trainer import build_trainer
+from models_new import data_loader, model_builder
+from models_new.data_loader import load_dataset
+from models_new.loss import abs_loss
+from src.models_new.model_builder import AbsSummarizer
+from models_new.predictor import build_predictor
+from models_new.trainer import build_trainer
 from others.logging import logger, init_logger
 
-model_flags = ['hidden_size', 'ff_size', 'heads', 'inter_layers', 'encoder', 'ff_actv', 'use_interval', 'rnn_size']
+model_flags = ['hidden_size', 'ff_size', 'heads', 'emb_size', 'enc_layers', 'enc_hidden_size', 'enc_ff_size',
+               'dec_layers', 'dec_hidden_size', 'dec_ff_size', 'encoder', 'ff_actv', 'use_interval']
 
 
 def str2bool(v):
@@ -33,7 +36,7 @@ def str2bool(v):
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
 
-def multi_main(args):
+def train_abs_multi(args):
     """ Spawns 1 process per GPU """
     init_logger()
 
@@ -59,6 +62,7 @@ def multi_main(args):
 
 def run(args, device_id, error_queue):
     """ run process """
+
     setattr(args, 'gpu_ranks', [int(i) for i in args.gpu_ranks])
 
     try:
@@ -68,7 +72,7 @@ def run(args, device_id, error_queue):
             raise AssertionError("An error occurred in \
                   Distributed initialization")
 
-        train(args, device_id)
+        train_abs_single(args, device_id)
     except KeyboardInterrupt:
         pass  # killed by parent, do nothing
     except Exception:
@@ -113,7 +117,7 @@ class ErrorHandler(object):
         raise Exception(msg)
 
 
-def wait_and_validate(args, device_id):
+def validate_abs(args, device_id):
     timestep = 0
     if (args.test_all):
         cp_files = sorted(glob.glob(os.path.join(args.model_path, 'model_step_*.pt')))
@@ -121,16 +125,19 @@ def wait_and_validate(args, device_id):
         xent_lst = []
         for i, cp in enumerate(cp_files):
             step = int(cp.split('.')[-2].split('_')[-1])
+            if (args.test_start_from != -1 and step < args.test_start_from):
+                xent_lst.append((1e6, cp))
+                continue
             xent = validate(args, device_id, cp, step)
             xent_lst.append((xent, cp))
             max_step = xent_lst.index(min(xent_lst))
             if (i - max_step > 10):
                 break
-        xent_lst = sorted(xent_lst, key=lambda x: x[0])[:3]
+        xent_lst = sorted(xent_lst, key=lambda x: x[0])[:5]
         logger.info('PPL %s' % str(xent_lst))
         for xent, cp in xent_lst:
             step = int(cp.split('.')[-2].split('_')[-1])
-            test(args, device_id, cp, step)
+            test_abs(args, device_id, cp, step)
     else:
         while (True):
             cp_files = sorted(glob.glob(os.path.join(args.model_path, 'model_step_*.pt')))
@@ -145,7 +152,7 @@ def wait_and_validate(args, device_id):
                     timestep = time_of_cp
                     step = int(cp.split('.')[-2].split('_')[-1])
                     validate(args, device_id, cp, step)
-                    test(args, device_id, cp, step)
+                    test_abs(args, device_id, cp, step)
 
             cp_files = sorted(glob.glob(os.path.join(args.model_path, 'model_step_*.pt')))
             cp_files.sort(key=os.path.getmtime)
@@ -172,26 +179,32 @@ def validate(args, device_id, pt, step):
             setattr(args, k, opt[k])
     print(args)
 
-    config = BertConfig.from_json_file(args.bert_config_path)
-    model = Summarizer(args, device, load_pretrained_bert=False, bert_config=config)
-    model.load_cp(checkpoint)
+    model = AbsSummarizer(args, device, checkpoint)
     model.eval()
 
     valid_iter = data_loader.Dataloader(args, load_dataset(args, 'valid', shuffle=False),
                                         args.batch_size, device,
                                         shuffle=False, is_test=False)
-    trainer = build_trainer(args, device_id, model, None)
+
+    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased', do_lower_case=True, cache_dir=args.temp_dir)
+    symbols = {'BOS': tokenizer.vocab['[unused0]'], 'EOS': tokenizer.vocab['[unused1]'],
+               'PAD': tokenizer.vocab['[PAD]'], 'EOQ': tokenizer.vocab['[unused2]']}
+
+    valid_loss = abs_loss(model.generator, symbols, model.vocab_size, train=False, device=device)
+
+    trainer = build_trainer(args, device_id, model, None, valid_loss)
     stats = trainer.validate(valid_iter, step)
     return stats.xent()
 
 
-def test(args, device_id, pt, step):
+def test_abs(args, device_id, pt, step):
     device = "cpu" if args.visible_gpus == '-1' else "cuda"
     if (pt != ''):
         test_from = pt
     else:
         test_from = args.test_from
     logger.info('Loading checkpoint from %s' % test_from)
+
     checkpoint = torch.load(test_from, map_location=lambda storage, loc: storage)
     opt = vars(checkpoint['opt'])
     for k in opt.keys():
@@ -199,24 +212,53 @@ def test(args, device_id, pt, step):
             setattr(args, k, opt[k])
     print(args)
 
-    config = BertConfig.from_json_file(args.bert_config_path)
-    model = Summarizer(args, device, load_pretrained_bert=False, bert_config=config)
-    model.load_cp(checkpoint)
+    model = AbsSummarizer(args, device, checkpoint)
     model.eval()
 
     test_iter = data_loader.Dataloader(args, load_dataset(args, 'test', shuffle=False),
-                                       args.batch_size, device,
+                                       args.test_batch_size, device,
                                        shuffle=False, is_test=True)
-    trainer = build_trainer(args, device_id, model, None)
-    trainer.test(test_iter, step)
+    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased', do_lower_case=True, cache_dir=args.temp_dir)
+    symbols = {'BOS': tokenizer.vocab['[unused0]'], 'EOS': tokenizer.vocab['[unused1]'],
+               'PAD': tokenizer.vocab['[PAD]'], 'EOQ': tokenizer.vocab['[unused2]']}
+    predictor = build_predictor(args, tokenizer, symbols, model, logger)
+    predictor.translate(test_iter, step)
+
+
+def test_text_abs(args, device_id, pt, step):
+    device = "cpu" if args.visible_gpus == '-1' else "cuda"
+    if (pt != ''):
+        test_from = pt
+    else:
+        test_from = args.test_from
+    logger.info('Loading checkpoint from %s' % test_from)
+
+    checkpoint = torch.load(test_from, map_location=lambda storage, loc: storage)
+    opt = vars(checkpoint['opt'])
+    for k in opt.keys():
+        if (k in model_flags):
+            setattr(args, k, opt[k])
+    print(args)
+
+    model = AbsSummarizer(args, device, checkpoint)
+    model.eval()
+
+    test_iter = data_loader.Dataloader(args, load_dataset(args, 'test', shuffle=False),
+                                       args.test_batch_size, device,
+                                       shuffle=False, is_test=True)
+    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased', do_lower_case=True, cache_dir=args.temp_dir)
+    symbols = {'BOS': tokenizer.vocab['[unused0]'], 'EOS': tokenizer.vocab['[unused1]'],
+               'PAD': tokenizer.vocab['[PAD]'], 'EOQ': tokenizer.vocab['[unused2]']}
+    predictor = build_predictor(args, tokenizer, symbols, model, logger)
+    predictor.translate(test_iter, step)
 
 
 def baseline(args, cal_lead=False, cal_oracle=False):
     test_iter = data_loader.Dataloader(args, load_dataset(args, 'test', shuffle=False),
-                                       args.batch_size, device,
+                                       args.batch_size, 'cpu',
                                        shuffle=False, is_test=True)
 
-    trainer = build_trainer(args, device_id, None, None)
+    trainer = build_trainer(args, '-1', None, None, None)
     #
     if (cal_lead):
         trainer.test(test_iter, 0, cal_lead=True)
@@ -224,9 +266,16 @@ def baseline(args, cal_lead=False, cal_oracle=False):
         trainer.test(test_iter, 0, cal_oracle=True)
 
 
-def train(args, device_id):
-    init_logger(args.log_file)
+def train_abs(args, device_id):
+    if (args.world_size > 1):
+        train_abs_multi(args)
+    else:
+        train_abs_single(args, device_id)
 
+
+def train_abs_single(args, device_id):
+    init_logger(args.log_file)
+    logger.info(str(args))
     device = "cpu" if args.visible_gpus == '-1' else "cuda"
     logger.info('Device ID %d' % device_id)
     logger.info('Device %s' % device)
@@ -238,18 +287,6 @@ def train(args, device_id):
         torch.cuda.set_device(device_id)
         torch.cuda.manual_seed(args.seed)
 
-    torch.manual_seed(args.seed)
-    random.seed(args.seed)
-    torch.backends.cudnn.deterministic = True
-    logger.info('data begin load %s', time.strftime('%H:%M:%S', time.localtime(time.time())))
-
-    def train_iter_fct():
-        return data_loader.Dataloader(args, load_dataset(args, 'train', shuffle=True), args.batch_size, device,
-                                      shuffle=True, is_test=False)
-
-    logger.info('data end load %s', time.strftime('%H:%M:%S', time.localtime(time.time())))
-    model = Summarizer(args, device, load_pretrained_bert=True)
-
     if args.train_from != '':
         logger.info('Loading checkpoint from %s' % args.train_from)
         checkpoint = torch.load(args.train_from,
@@ -258,89 +295,40 @@ def train(args, device_id):
         for k in opt.keys():
             if (k in model_flags):
                 setattr(args, k, opt[k])
-        model.load_cp(checkpoint)
-        optim = model_builder.build_optim(args, model, checkpoint)
     else:
-        optim = model_builder.build_optim(args, model, None)
+        checkpoint = None
+
+    if (args.load_from_extractive != ''):
+        logger.info('Loading bert from extractive model %s' % args.load_from_extractive)
+        bert_from_extractive = torch.load(args.load_from_extractive, map_location=lambda storage, loc: storage)
+        bert_from_extractive = bert_from_extractive['model']
+    else:
+        bert_from_extractive = None
+    torch.manual_seed(args.seed)
+    random.seed(args.seed)
+    torch.backends.cudnn.deterministic = True
+
+    def train_iter_fct():
+        return data_loader.Dataloader(args, load_dataset(args, 'train', shuffle=True), args.batch_size, device,
+                                      shuffle=True, is_test=False)
+
+    model = AbsSummarizer(args, device, checkpoint, bert_from_extractive)
+    if (args.sep_optim):
+        optim_bert = model_builder.build_optim_bert(args, model, checkpoint)
+        optim_dec = model_builder.build_optim_dec(args, model, checkpoint)
+        optim = [optim_bert, optim_dec]
+    else:
+        optim = [model_builder.build_optim(args, model, checkpoint)]
 
     logger.info(model)
-    trainer = build_trainer(args, device_id, model, optim)
+
+    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased', do_lower_case=True, cache_dir=args.temp_dir)
+    symbols = {'BOS': tokenizer.vocab['[unused0]'], 'EOS': tokenizer.vocab['[unused1]'],
+               'PAD': tokenizer.vocab['[PAD]'], 'EOQ': tokenizer.vocab['[unused2]']}
+
+    train_loss = abs_loss(model.generator, symbols, model.vocab_size, device, train=True,
+                          label_smoothing=args.label_smoothing)
+
+    trainer = build_trainer(args, device_id, model, optim, train_loss)
+
     trainer.train(train_iter_fct, args.train_steps)
-
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument("-encoder", default='classifier', type=str,
-                        choices=['classifier', 'transformer', 'rnn', 'baseline'])
-    parser.add_argument("-mode", default='train', type=str, choices=['train', 'validate', 'test'])
-    parser.add_argument("-bert_data_path", default='../bert_data/cnndm')
-    parser.add_argument("-model_path", default='../models_new/')
-    parser.add_argument("-result_path", default='../results/cnndm')
-    parser.add_argument("-temp_dir", default='../temp')
-    parser.add_argument("-bert_config_path", default='../bert_config_uncased_base.json')
-
-    parser.add_argument("-batch_size", default=1000, type=int)
-
-    parser.add_argument("-use_interval", type=str2bool, nargs='?', const=True, default=True)
-    parser.add_argument("-hidden_size", default=128, type=int)
-    parser.add_argument("-ff_size", default=512, type=int)
-    parser.add_argument("-heads", default=4, type=int)
-    parser.add_argument("-inter_layers", default=2, type=int)
-    parser.add_argument("-rnn_size", default=512, type=int)
-
-    parser.add_argument("-param_init", default=0, type=float)
-    parser.add_argument("-param_init_glorot", type=str2bool, nargs='?', const=True, default=True)
-    parser.add_argument("-dropout", default=0.1, type=float)
-    parser.add_argument("-optim", default='adam', type=str)
-    parser.add_argument("-lr", default=1, type=float)
-    parser.add_argument("-beta1", default=0.9, type=float)
-    parser.add_argument("-beta2", default=0.999, type=float)
-    parser.add_argument("-decay_method", default='', type=str)
-    parser.add_argument("-warmup_steps", default=8000, type=int)
-    parser.add_argument("-max_grad_norm", default=0, type=float)
-
-    parser.add_argument("-save_checkpoint_steps", default=5, type=int)
-    parser.add_argument("-accum_count", default=1, type=int)
-    parser.add_argument("-world_size", default=1, type=int)
-    parser.add_argument("-report_every", default=1, type=int)
-    parser.add_argument("-train_steps", default=1000, type=int)
-    parser.add_argument("-recall_eval", type=str2bool, nargs='?', const=True, default=False)
-
-    parser.add_argument('-visible_gpus', default='-1', type=str)
-    parser.add_argument('-gpu_ranks', default='0', type=str)
-    parser.add_argument('-log_file', default='../logs/cnndm.log')
-    parser.add_argument('-dataset', default='')
-    parser.add_argument('-seed', default=666, type=int)
-
-    parser.add_argument("-test_all", type=str2bool, nargs='?', const=True, default=False)
-    parser.add_argument("-test_from", default='')
-    parser.add_argument("-train_from", default='')
-    parser.add_argument("-report_rouge", type=str2bool, nargs='?', const=True, default=True)
-    parser.add_argument("-block_trigram", type=str2bool, nargs='?', const=True, default=True)
-
-    args = parser.parse_args()
-    args.gpu_ranks = [int(i) for i in args.gpu_ranks.split(',')]
-    os.environ["CUDA_VISIBLE_DEVICES"] = args.visible_gpus
-
-    init_logger(args.log_file)
-    device = "cpu" if args.visible_gpus == '-1' else "cuda"
-    device_id = 0 if device == "cuda" else -1
-
-    if (args.world_size > 1):
-        multi_main(args)
-    elif (args.mode == 'train'):
-        train(args, device_id)
-    elif (args.mode == 'validate'):
-        wait_and_validate(args, device_id)
-    elif (args.mode == 'lead'):
-        baseline(args, cal_lead=True)
-    elif (args.mode == 'oracle'):
-        baseline(args, cal_oracle=True)
-    elif (args.mode == 'test'):
-        cp = args.test_from
-        try:
-            step = int(cp.split('.')[-2].split('_')[-1])
-        except:
-            step = 0
-        test(args, device_id, cp, step)
