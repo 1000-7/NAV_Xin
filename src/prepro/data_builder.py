@@ -333,7 +333,7 @@ def format_to_lines(args):
     for corpus_type in ['valid', 'test', 'train']:
         temp = []
         for line in open(pjoin(args.map_path, 'mapping_' + corpus_type + '.txt')):
-            temp.append(hashhex(line.strip()))
+            temp.append(line.strip())
         corpus_mapping[corpus_type] = {key.strip(): 1 for key in temp}
     train_files, valid_files, test_files = [], [], []
     for f in glob.glob(pjoin(args.raw_path, '*.json')):
