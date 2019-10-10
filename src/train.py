@@ -88,10 +88,10 @@ if __name__ == '__main__':
     parser.add_argument("-warmup_steps_dec", default=10000, type=int)
     parser.add_argument("-max_grad_norm", default=0, type=float)
 
-    parser.add_argument("-save_checkpoint_steps", default=50000, type=int)
+    parser.add_argument("-save_checkpoint_steps", default=20000, type=int)
     parser.add_argument("-accum_count", default=5, type=int)
     parser.add_argument("-report_every", default=100, type=int)
-    parser.add_argument("-train_steps", default=1000000, type=int)
+    parser.add_argument("-train_steps", default=400000, type=int)
     parser.add_argument("-recall_eval", type=str2bool, nargs='?',const=True,default=False)
 
 
