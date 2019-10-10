@@ -43,7 +43,7 @@ if __name__ == '__main__':
     parser.add_argument("-large", type=str2bool, nargs='?',const=True,default=False)
     parser.add_argument("-load_from_extractive", default='', type=str)
 
-    parser.add_argument("-sep_optim", type=str2bool, nargs='?',const=True,default=False)
+    parser.add_argument("-sep_optim", type=str2bool, nargs='?',const=True,default=True)
     parser.add_argument("-lr_bert", default=2e-3, type=float)
     parser.add_argument("-lr_dec", default=0.1, type=float)
     parser.add_argument("-use_bert_emb", type=str2bool, nargs='?',const=True,default=True)
