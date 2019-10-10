@@ -30,7 +30,6 @@ def recover_from_corenlp(s):
     s = re.sub(r'\'\' {\w}', '\'\'\g<1>', s)
 
 
-
 def load_json(p, lower):
     source = []
     tgt = []
@@ -51,7 +50,6 @@ def load_json(p, lower):
     source = [clean(' '.join(sent)).split() for sent in source]
     tgt = [clean(' '.join(sent)).split() for sent in tgt]
     return source, tgt
-
 
 
 def load_xml(p):
@@ -136,6 +134,7 @@ def tokenize(args):
             "The tokenized stories directory %s contains %i files, but it should contain the same number as %s (which has %i files). Was there an error during tokenization?" % (
                 tokenized_stories_dir, num_tokenized, stories_dir, num_orig))
     print("Successfully finished tokenizing %s to %s.\n" % (stories_dir, tokenized_stories_dir))
+
 
 def cal_rouge(evaluated_ngrams, reference_ngrams):
     reference_count = len(reference_ngrams)
@@ -259,7 +258,8 @@ class BertData():
         sent_labels = sent_labels[:len(cls_ids)]
 
         tgt_subtokens_str = '[unused0] ' + ' [unused2] '.join(
-            [' '.join(self.tokenizer.tokenize(' '.join(tt), use_bert_basic_tokenizer=use_bert_basic_tokenizer)) for tt in tgt]) + ' [unused1]'
+            [' '.join(self.tokenizer.tokenize(' '.join(tt), use_bert_basic_tokenizer=use_bert_basic_tokenizer)) for tt
+             in tgt]) + ' [unused1]'
         tgt_subtoken = tgt_subtokens_str.split()[:self.args.max_tgt_ntokens]
         if ((not is_test) and len(tgt_subtoken) < self.args.min_tgt_ntokens):
             return None
@@ -335,6 +335,7 @@ def format_to_lines(args):
         for line in open(pjoin(args.map_path, 'mapping_' + corpus_type + '.txt')):
             temp.append(line.strip())
         corpus_mapping[corpus_type] = {key.strip(): 1 for key in temp}
+    logger.info("txt read finished")
     train_files, valid_files, test_files = [], [], []
     for f in glob.glob(pjoin(args.raw_path, '*.json')):
         real_name = f.split('/')[-1].split('.')[0]
@@ -344,9 +345,10 @@ def format_to_lines(args):
             test_files.append(f)
         elif (real_name in corpus_mapping['train']):
             train_files.append(f)
-        # else:
-        #     train_files.append(f)
-
+        else:
+            logger.info("not in mapping file", f)
+            train_files.append(f)
+    logger.info("data split over")
     corpora = {'train': train_files, 'valid': valid_files, 'test': test_files}
     for corpus_type in ['train', 'valid', 'test']:
         a_lst = [(f, args) for f in corpora[corpus_type]]
@@ -379,8 +381,6 @@ def _format_to_lines(params):
     print(f)
     source, tgt = load_json(f, args.lower)
     return {'src': source, 'tgt': tgt}
-
-
 
 
 def format_xsum_to_lines(args):

@@ -23,11 +23,11 @@ def is_filter(s):
 
 
 def is_filter_paper_section(s):
-    return is_filter(s) or len(s.split(" ") < 50)
+    return is_filter(s) or len(s.split(" ")) < 50
 
 
 def is_filter_summary(s):
-    return is_filter(s) or len(s.split(" ") < 10) or len(s.split(" ")) > 150
+    return is_filter(s) or len(s.split(" ")) < 10 or len(s.split(" ")) > 150
 
 
 db = pymysql.connect("localhost", "root", "irlab2017", "graduate", charset='utf8')
@@ -35,6 +35,7 @@ db = pymysql.connect("localhost", "root", "irlab2017", "graduate", charset='utf8
 init_logger("../../logs/mysql.log")
 # 使用cursor()方法获取操作游标
 cursor = db.cursor()
+content_set = set()
 
 for iter in range(0, 11):
     logger.info("now batch is:" + str(iter))
@@ -56,6 +57,11 @@ for iter in range(0, 11):
 
         if is_filter_paper_section(paper_section) or is_filter_summary(summary_sentence):
             continue
+
+        if paper_section in content_set:
+            continue
+
+        content_set.add(paper_section)
 
         with open('/home/wangxin/PycharmProjects/nav_story/' + str(data_id) + '.story', 'w') as fw:
             fw.write(paper_section + "\n")
