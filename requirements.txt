@@ -8,3 +8,4 @@ pyrouge
 pymysql
 sqlalchemy
 pytorch_transformers
+hanlp
